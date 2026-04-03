@@ -68,13 +68,13 @@ MD;
     {
         return [
             'text' => [
-                'type'        => 'text',
-                'label'       => 'Message',
+                'type' => 'text',
+                'label' => 'Message',
                 'placeholder' => 'Paste your email or message here…',
-                'rows'        => 12,
-                'required'    => true,
-                'max_length'  => 50_000,
-                'help'        => 'Maximum 50,000 characters. Processed locally in your browser.',
+                'rows' => 12,
+                'required' => true,
+                'max_length' => 50_000,
+                'help' => 'Maximum 50,000 characters. Processed locally in your browser.',
             ],
         ];
     }
