@@ -253,45 +253,98 @@
 (function () {
     const MAX_CHARS = 50000;
 
-    /** Extend these arrays to tune detection without touching the rest of the engine. */
+    /**
+     * Central tuning: tweak weights here to shift score ranges without rewriting logic.
+     * Target bands: poor ~20–40, average ~45–65, good ~70–85, excellent 85+.
+     */
+    const WEIGHTS = {
+        compoundOverallBoost: 15, // gratitude + effort recognition both present
+        ackBase: 34,
+        ackPerGratitude: 7,
+        ackGratitudeCap: 20,
+        ackPerEffort: 5,
+        ackEffortCap: 14,
+        ackOpeningBonus: 9,
+        clarityBase: 44,
+        clarityByWeekday: 18,
+        clarityUpdateByPhrase: 14,
+        clarityTimelineWord: 5,
+        clarityTimelineCap: 12,
+        clarityNextSteps: 7,
+        clarityVaguePenalty: 12,
+        clarityVaguePenaltyProgress: 4,
+        respectBase: 56,
+        respectSignOff: 12,
+        respectPlease: 4,
+        respectDifficultDecision: 9,
+        warmthBase: 50,
+        warmthPerWarmExtra: 6,
+        warmthWarmExtraCap: 18,
+        warmthPerSupportive: 7,
+        warmthSupportiveCap: 14,
+        warmthRobotic: 11,
+        warmthColdOpener: 8,
+        focusBase: 44,
+        focusYouYourBoost: 12,
+        focusProcessJargon: 7,
+    };
+
+    /** Case-insensitive regex rows: { re, label } for detection + UI reporting */
+    const PATTERNS = {
+        gratitude: [
+            { re: /\bthank you\b/i, label: 'Thank you' },
+            { re: /\bthanks(?:\s+for)?\b/i, label: 'Thanks' },
+            { re: /\bappreciate(?:d|s)?\b/i, label: 'Appreciation' },
+            { re: /\bgrateful\b/i, label: 'Grateful' },
+        ],
+        effort: [
+            { re: /time\s+you\s+(?:took|spent)/i, label: 'Time you took / spent' },
+            { re: /\beffort\b/i, label: 'Effort recognised' },
+            { re: /insight\s+you\s+shared/i, label: 'Insight you shared' },
+            { re: /learn(?:ing|ed)?\s+(?:more\s+)?about/i, label: 'Learning about you' },
+            { re: /(?:speak|speaking|spoke)\s+with\s+you/i, label: 'Speaking with you' },
+            { re: /taking\s+the\s+time/i, label: 'Taking the time' },
+            { re: /(?:phone|video|our)\s+(?:call|conversation)\b/i, label: 'Call / conversation' },
+        ],
+        supportive: [
+            { re: /feel\s+free\s+to\s+reach\s+out/i, label: 'Feel free to reach out' },
+            { re: /happy\s+to\s+help/i, label: 'Happy to help' },
+            { re: /let\s+me\s+know\s+if\s+you\s+have/i, label: 'Invite to ask questions' },
+            { re: /questions\s+in\s+the\s+meantime/i, label: 'Questions in the meantime' },
+            { re: /reach\s+out\b/i, label: 'Reach out' },
+        ],
+        warmExtra: [
+            { re: /really\s+appreciated/i, label: 'Really appreciated' },
+            { re: /great\s+to\s+learn/i, label: 'Great to learn' },
+            { re: /enjoyed\s+speaking/i, label: 'Enjoyed speaking' },
+            { re: /look\s+forward\s+to/i, label: 'Look forward' },
+            { re: /enjoyed\s+learning/i, label: 'Enjoyed learning' },
+        ],
+    };
+
+    /** Substrings for harsh / vague highlights (unchanged case-insensitive scan) */
     const PHRASES = {
         positive: [
             'thank you for your time',
             'thank you for applying',
-            'thanks for your patience',
             'we appreciate your interest',
-            'we appreciate the effort',
-            'appreciate you taking the time',
             'enjoyed learning more about your experience',
-            'we enjoyed speaking with you',
-            'we wanted to let you know',
             'we will update you by',
-            'you will hear from us by',
-            'thank you for interviewing',
-            'grateful for the opportunity to',
-            'value the time you invested',
-            'thank you for your understanding',
+            'feel free to reach out',
         ],
         negative: [
             'unfortunately',
             'regret to inform you',
             'due to high volume',
-            'due to the volume',
             'not a good fit',
-            'not a strong fit',
             'we have decided to move forward with other candidates',
             'moving forward with other candidates',
-            'we will be in touch soon',
-            'we\'ll be in touch soon',
-            'after careful consideration',
-            'we are unable to proceed',
             'you have not been selected',
             'you were not selected',
         ],
         vague: [
             'we will be in touch',
             'we\'ll be in touch',
-            'at your earliest convenience',
             'in due course',
             'stay tuned',
             'shortly',
@@ -300,79 +353,53 @@
             'touch base',
             'circle back',
         ],
-        timeline: [
-            'today',
-            'tomorrow',
-            'next week',
-            'by friday',
-            'by monday',
-            'by tuesday',
-            'by wednesday',
-            'by thursday',
-            'end of day',
-            'eod',
-            'end of week',
-            'within 24 hours',
-            'within 48 hours',
-            'within 3 days',
-            'within three days',
-            'next steps',
-            'calendar',
-            'schedule a call',
-        ],
-        gratitude: [
-            'thank you',
-            'thanks for',
-            'appreciate your',
-            'we appreciate',
-            'grateful',
-        ],
-        timeAck: [
-            'your time',
-            'time you spent',
-            'time and effort',
-            'effort you put',
-            'invested in the process',
-        ],
-        warm: [
-            'we wanted to reach out',
-            'personally',
-            'it was a pleasure',
-            'great speaking',
-            'impressed by',
+        timelineWords: [
+            'today', 'tomorrow', 'next week', 'by friday', 'by monday', 'by tuesday',
+            'by wednesday', 'by thursday', 'end of day', 'eod', 'end of week',
+            'within 24 hours', 'within 48 hours', 'next steps', 'calendar',
         ],
         robotic: [
             'due to the large number',
             'high volume of applicants',
             'standard process',
         ],
-        casual: [
-            'lol',
-            'omg',
-            'gonna',
-            'hey guys',
-            'btw',
-            'np',
-            'asap',
-        ],
-        politeClose: [
-            'kind regards',
-            'best regards',
-            'sincerely',
-            'warm regards',
-        ],
+        casual: ['lol', 'omg', 'gonna', 'hey guys', 'btw', 'np'],
         rejectionSignals: [
-            'not selected',
-            'unable to offer',
-            'will not be moving forward',
-            'not move forward',
-            'reject',
-            'unsuccessful',
+            'not selected', 'unable to offer', 'will not be moving forward',
+            'not move forward', 'unsuccessful',
         ],
     };
 
+    const SIGN_OFF_RES = [
+        /(?:^|\n)\s*best\s*[,\n]/im,
+        /(?:^|\n)\s*thanks\s*[,\n]/im,
+        /(?:^|\n)\s*regards\s*[,\n]/im,
+        /\bkind regards\b/i,
+        /\bbest regards\b/i,
+        /\bwarm regards\b/i,
+        /\ball the best\b/i,
+        /\bsincerely\b/i,
+        /\bcheers\s*[,\n]/im,
+    ];
+
     function clamp(n, lo, hi) {
         return Math.max(lo, Math.min(hi, n));
+    }
+
+    /** Collect unique labels for any regex that matches (whole text, case-insensitive via /i). */
+    function matchPatternLabels(text, rows) {
+        const labels = [];
+        const seen = new Set();
+        for (const { re, label } of rows) {
+            const r = new RegExp(re.source, 'i');
+            if (r.test(text)) {
+                if (!seen.has(label)) {
+                    seen.add(label);
+                    labels.push(label);
+                }
+            }
+        }
+        return labels;
     }
 
     function countInsensitive(haystack, needle) {
@@ -392,21 +419,34 @@
 
     function collectPhraseHits(text, list) {
         const hits = [];
-        const seen = {};
         for (const phrase of list) {
             const c = countInsensitive(text, phrase);
-            if (c > 0) {
-                hits.push({ phrase, count: c });
-                seen[phrase] = c;
-            }
+            if (c > 0) hits.push({ phrase, count: c });
         }
         hits.sort((a, b) => b.count - a.count || a.phrase.localeCompare(b.phrase));
-        return { hits, map: seen };
+        return { hits };
     }
 
     function wordCountFn(t) {
-        const w = t.trim().split(/\s+/).filter(Boolean);
-        return w.length;
+        return t.trim().split(/\s+/).filter(Boolean).length;
+    }
+
+    /** Progress vs rejection vs general — drives penalties only */
+    function inferMessageType(lower) {
+        const rejection = /\bunfortunately\b|\bregret(?:\s+to\s+inform)?\b/i.test(lower)
+            || /move\s+forward\s+with\s+other\s+candidates/i.test(lower)
+            || /\bnot\s+been\s+selected\b|\byou\s+were\s+not\s+selected\b/i.test(lower);
+        const progress = /still\s+in\s+the\s+process|interviewing\s+candidates|interviewing\s+applicants/i.test(lower)
+            || /expect\s+to\s+(?:provide\s+)?(?:an\s+)?update|provide\s+an\s+update|update\s+by/i.test(lower);
+        if (rejection) return 'rejection';
+        if (progress && !rejection) return 'progress_update';
+        return 'general';
+    }
+
+    /** Sign-off: look at closing lines only — Best / Thanks / Regards count */
+    function hasSignOff(text) {
+        const tail = text.slice(Math.max(0, text.length - 420));
+        return SIGN_OFF_RES.some((re) => re.test(tail));
     }
 
     function applySeverityBuffer(lower, original, phrases, level, buf) {
@@ -425,10 +465,28 @@
         }
     }
 
+    /** Highlight regex pattern matches (green tier) */
+    function applyRegexSeverityBuffer(text, rows, level, buf) {
+        for (const { re } of rows) {
+            const rx = new RegExp(re.source, 'gi');
+            let m;
+            while ((m = rx.exec(text)) !== null) {
+                const i = m.index;
+                const end = i + m[0].length;
+                for (let j = i; j < end && j < buf.length; j++) {
+                    buf[j] = Math.max(buf[j], level);
+                }
+                if (m[0].length === 0) {
+                    rx.lastIndex++;
+                }
+            }
+        }
+    }
+
     function buildHighlightHtml(original, buf) {
         if (!original.length) return '';
         let html = '';
-        let cur = buf[0];
+        let cur = buf[0] || 0;
         let start = 0;
         const open = (sev) => {
             if (sev === 3) return '<mark class="bg-rose-200 text-rose-950 rounded px-0.5">';
@@ -443,7 +501,6 @@
             .replace(/"/g, '&quot;');
 
         for (let i = 1; i <= original.length; i++) {
-            const ch = original[i - 1];
             const next = i < original.length ? buf[i] : -1;
             if (i === original.length || buf[i] !== cur) {
                 const chunk = original.slice(start, i);
@@ -486,69 +543,93 @@
             return empty;
         }
 
-        const posH = collectPhraseHits(lower, PHRASES.positive);
+        const msgType = inferMessageType(lower);
+        const signOffOK = hasSignOff(text);
+        const opening = lower.slice(0, Math.min(lower.length, 160));
+
+        const gratLabels = matchPatternLabels(text, PATTERNS.gratitude);
+        const effortLabels = matchPatternLabels(text, PATTERNS.effort);
+        const supportiveLabels = matchPatternLabels(text, PATTERNS.supportive);
+        const warmExtraLabels = matchPatternLabels(text, PATTERNS.warmExtra);
+
+        const hasGratitude = gratLabels.length > 0;
+        const hasEffort = effortLabels.length > 0;
+        const compoundPair = hasGratitude && hasEffort;
+
         const negH = collectPhraseHits(lower, PHRASES.negative);
         const vagueH = collectPhraseHits(lower, PHRASES.vague);
 
-        let gratitudeScore = 0;
-        for (const g of PHRASES.gratitude) {
-            gratitudeScore += countInsensitive(lower, g) * 6;
-        }
-        gratitudeScore = clamp(gratitudeScore, 0, 30);
+        const hasTimelineWord = PHRASES.timelineWords.some((t) => lower.includes(t));
+        const hasWeekdayDeadline = /\bby\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(lower);
+        const hasUpdateBy = /(?:provide\s+)?(?:an\s+)?update\s+by|update\s+you\s+by|hear\s+from\s+us\s+by/i.test(lower);
 
-        let timeAck = 0;
-        for (const g of PHRASES.timeAck) {
-            if (lower.includes(g)) timeAck += 12;
-        }
-        timeAck = clamp(timeAck, 0, 24);
-
-        let acknowledgement = 42 + gratitudeScore + timeAck;
-        if (wc > 20 && gratitudeScore === 0) acknowledgement -= 22;
-        const opening = lower.slice(0, Math.min(lower.length, 140));
-        if (/(thank|thanks|appreciate)/.test(opening)) acknowledgement += 12;
+        // --- Acknowledgement: gratitude + effort recognition (regex), opening line ---
+        let acknowledgement = WEIGHTS.ackBase
+            + Math.min(WEIGHTS.ackGratitudeCap, gratLabels.length * WEIGHTS.ackPerGratitude)
+            + Math.min(WEIGHTS.ackEffortCap, effortLabels.length * WEIGHTS.ackPerEffort);
+        if (/(thank|thanks|appreciate|grateful)/.test(opening)) acknowledgement += WEIGHTS.ackOpeningBonus;
+        if (wc > 28 && !hasGratitude) acknowledgement -= msgType === 'rejection' ? 20 : 12;
         acknowledgement = clamp(acknowledgement, 0, 100);
 
-        let clarity = 48;
-        for (const t of PHRASES.timeline) {
-            if (lower.includes(t)) clarity += 5;
+        // --- Clarity: strong boost for "by Friday" OR "update by" (avoid double-counting the same promise) ---
+        let clarity = WEIGHTS.clarityBase;
+        if (hasWeekdayDeadline) {
+            clarity += WEIGHTS.clarityByWeekday;
+        } else if (hasUpdateBy) {
+            clarity += WEIGHTS.clarityUpdateByPhrase;
         }
-        clarity = clamp(clarity, 0, 95);
-        if (/\b(by|before)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lower)) clarity += 10;
-        if (/\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2}/.test(text)) clarity += 8;
-        if (/\b(soon|shortly|in due course)\b/.test(lower) && !PHRASES.timeline.some((x) => lower.includes(x))) clarity -= 14;
-        if (lower.includes('we will be in touch') || lower.includes('we\'ll be in touch')) {
-            const hasDateNearby = /(monday|tuesday|wednesday|thursday|friday|today|tomorrow|next week|\d)/.test(lower);
-            if (!hasDateNearby) clarity -= 12;
+        let tw = 0;
+        for (const w of PHRASES.timelineWords) {
+            // Avoid double-counting "by Friday" when we already gave the weekday deadline bonus
+            if (hasWeekdayDeadline && w.startsWith('by ')) continue;
+            if (lower.includes(w)) tw += WEIGHTS.clarityTimelineWord;
         }
-        if (/\bnext steps\b/.test(lower)) clarity += 8;
+        clarity += Math.min(WEIGHTS.clarityTimelineCap, tw);
+        if (/\bnext steps\b/.test(lower)) clarity += WEIGHTS.clarityNextSteps;
+        if (/\d{1,2}\/\d{1,2}|\d{4}-\d{2}-\d{2}/.test(text)) clarity += 6;
+
+        const vagueOnly = /\b(soon|shortly|in due course)\b/.test(lower) && !hasTimelineWord && !hasWeekdayDeadline;
+        const touchVague = /we\s+will\s+be\s+in\s+touch|we'll\s+be\s+in\s+touch/.test(lower)
+            && !/\b(monday|tuesday|wednesday|thursday|friday|today|tomorrow|next week|\d)\b/i.test(lower);
+        const vaguePenalty = msgType === 'progress_update' ? WEIGHTS.clarityVaguePenaltyProgress : WEIGHTS.clarityVaguePenalty;
+        if (vagueOnly) clarity -= vaguePenalty;
+        if (touchVague) clarity -= msgType === 'progress_update' ? 5 : WEIGHTS.clarityVaguePenalty;
         clarity = clamp(clarity, 0, 100);
 
-        let respect = 52;
-        if (PHRASES.politeClose.some((p) => lower.includes(p))) respect += 8;
-        if (/\bplease\b/.test(lower)) respect += 4;
-        if (/(difficult decision|not an easy decision)/.test(lower)) respect += 10;
-        if (/not a good fit/.test(lower)) respect -= 8;
-        if (/(you have not been selected|you were not selected)/.test(lower) && gratitudeScore < 6) respect -= 12;
+        // --- Respect: sign-offs expanded; rejection-specific blunt penalties ---
+        let respect = WEIGHTS.respectBase;
+        if (signOffOK) respect += WEIGHTS.respectSignOff;
+        if (/\bplease\b/.test(lower)) respect += WEIGHTS.respectPlease;
+        if (/(difficult decision|not an easy decision)/.test(lower)) respect += WEIGHTS.respectDifficultDecision;
+        if (msgType === 'rejection') {
+            if (/not a good fit/.test(lower)) respect -= 9;
+            if (/(you have not been selected|you were not selected)/.test(lower) && gratLabels.length === 0) respect -= 14;
+            if (negH.hits.length > 2 && gratLabels.length < 2) respect -= 8;
+        }
+        if (!signOffOK && wc > 35) respect -= 10;
         respect = clamp(respect, 0, 100);
 
-        let warmth = 50;
-        for (const w of PHRASES.warm) {
-            if (lower.includes(w)) warmth += 6;
-        }
-        warmth += Math.min(posH.hits.length * 4, 16);
+        // --- Warmth: reward warm/supportive phrases; penalise only clear robotic / cold openers ---
+        let warmth = WEIGHTS.warmthBase
+            + Math.min(WEIGHTS.warmthWarmExtraCap, warmExtraLabels.length * WEIGHTS.warmthPerWarmExtra)
+            + Math.min(WEIGHTS.warmthSupportiveCap, supportiveLabels.length * WEIGHTS.warmthPerSupportive);
+        let roboticHits = 0;
         for (const r of PHRASES.robotic) {
-            if (lower.includes(r)) warmth -= 12;
+            if (lower.includes(r)) roboticHits++;
         }
-        if (/^unfortunately\b/m.test(trimmed) || lower.startsWith('unfortunately')) warmth -= 8;
-        if (/regret to inform/.test(lower)) warmth -= 6;
+        if (roboticHits) warmth -= Math.min(22, roboticHits * WEIGHTS.warmthRobotic);
+        if (msgType !== 'progress_update' && (/^unfortunately\b/m.test(trimmed) || /^unfortunately\b/.test(lower.slice(0, 40)))) {
+            warmth -= WEIGHTS.warmthColdOpener;
+        }
+        if (/regret\s+to\s+inform/.test(lower)) warmth -= msgType === 'rejection' ? 7 : 4;
         warmth = clamp(warmth, 0, 100);
 
         const youMatches = (lower.match(/\b(you|your|you're|you've)\b/g) || []).length;
         const weMatches = (lower.match(/\b(we|our|us|we're|we've)\b/g) || []).length;
-        const focusRatio = youMatches / (youMatches + weMatches + 0.25);
-        let candidateFocus = 45 + Math.round((focusRatio - 0.45) * 55);
-        if (/\b(your experience|your background|your application)\b/.test(lower)) candidateFocus += 10;
-        if (/\bour (process|policy|team's)\b/.test(lower) && youMatches < 3) candidateFocus -= 8;
+        const focusRatio = youMatches / (youMatches + weMatches + 0.22);
+        let candidateFocus = WEIGHTS.focusBase + Math.round((focusRatio - 0.42) * 50);
+        if (/\b(your experience|your background|your application|insight you)\b/i.test(lower)) candidateFocus += WEIGHTS.focusYouYourBoost;
+        if (/\bour (process|policy)\b/.test(lower) && youMatches < 4) candidateFocus -= WEIGHTS.focusProcessJargon;
         candidateFocus = clamp(candidateFocus, 0, 100);
 
         const dims = [
@@ -559,85 +640,102 @@
             { key: 'candidate_focus', title: 'Candidate focus', score: candidateFocus },
         ];
 
-        const overall = Math.round(dims.reduce((s, d) => s + d.score, 0) / dims.length);
+        const avgDim = dims.reduce((s, d) => s + d.score, 0) / dims.length;
+        // Compound boost: gratitude + effort — large bump to overall only (dims already reflect content)
+        let overall = Math.round(avgDim + (compoundPair ? WEIGHTS.compoundOverallBoost : 0));
+        overall = clamp(overall, 0, 100);
 
         const casualScore = PHRASES.casual.reduce((s, p) => s + countInsensitive(lower, p), 0)
             + ((text.match(/!/g) || []).length > 4 ? 3 : 0);
-        const coldSignals = negH.hits.length + (gratitudeScore === 0 && wc > 30 ? 2 : 0) + (warmth < 38 ? 2 : 0);
-        const warmSignals = posH.hits.length + (warmth > 62 ? 2 : 0);
+        const coldSignals = negH.hits.length + (!hasGratitude && wc > 35 && msgType === 'rejection' ? 3 : 0);
+        const warmSignals = warmExtraLabels.length + supportiveLabels.length + (warmth > 64 ? 1 : 0);
 
         let toneLabel = 'Neutral';
-        let toneHint = 'Balanced formality — add clearer timelines or gratitude to shift the feel.';
+        let toneHint = 'Readable and balanced — neutral is fine when timelines and respect are clear.';
         if (casualScore >= 4 || (casualScore >= 2 && /(lol|gonna|hey guys)/.test(lower))) {
             toneLabel = 'Overly casual';
-            toneHint = 'Slang or very informal markers may undermine professionalism in hiring mail.';
-        } else if (coldSignals > warmSignals + 3 && warmth < 45) {
+            toneHint = 'Very informal markers can read as too relaxed for hiring mail.';
+        } else if (coldSignals > warmSignals + 4 && warmth < 48 && msgType === 'rejection') {
             toneLabel = 'Cold';
-            toneHint = 'Reads distant or template-heavy — soften with acknowledgement and specificity.';
-        } else if (warmSignals > coldSignals + 4 && warmth >= 58 && acknowledgement >= 55) {
+            toneHint = 'For bad news, add more acknowledgement and specificity.';
+        } else if (warmSignals >= 3 && warmth >= 60 && hasGratitude) {
             toneLabel = 'Warm';
-            toneHint = 'Human and appreciative — ensure timelines stay concrete if next steps matter.';
-        } else if (/(sincerely|kind regards|best regards|dear )/.test(lower) && casualScore < 2 && warmth < 70) {
+            toneHint = 'Sounds human and considerate — keep dates concrete if people are waiting.';
+        } else if ((/kind regards|best regards|sincerely|dear\s+\w/i.test(lower) || signOffOK) && casualScore < 2 && warmth < 72) {
             toneLabel = 'Professional';
-            toneHint = 'Polished and conventional — good baseline for formal hiring communication.';
+            toneHint = 'Polite and appropriate for workplace email.';
         }
 
+        // --- Human-readable positive pattern list for chips ---
+        const positiveHits = [];
+        const addHit = (label) => positiveHits.push({ phrase: label, count: 1 });
+        gratLabels.forEach((l) => addHit(`${l} detected`));
+        effortLabels.forEach((l) => addHit(`${l} detected`));
+        supportiveLabels.forEach((l) => addHit(`${l} detected`));
+        if (compoundPair) addHit('Gratitude + effort (compound boost)');
+        if (warmExtraLabels.length) warmExtraLabels.forEach((l) => addHit(`${l}`));
+
         const strengths = [];
-        if (posH.hits.length) strengths.push(`Uses supportive phrasing (${posH.hits.length} positive pattern${posH.hits.length > 1 ? 's' : ''} detected).`);
-        if (PHRASES.timeline.some((t) => lower.includes(t))) strengths.push('Includes concrete timing or scheduling language.');
-        if (/(thank|thanks|appreciate)/.test(opening)) strengths.push('Opens with appreciation — sets a respectful tone early.');
-        if (/\bnext steps\b/.test(lower)) strengths.push('Mentions next steps, which reduces ambiguity.');
-        if (strengths.length === 0) strengths.push('Message is readable — add explicit gratitude and timing to strengthen empathy.');
+        if (msgType === 'progress_update') strengths.push('Reads as a progress update — not scored like a rejection.');
+        if (hasGratitude) strengths.push('Gratitude or appreciation is present.');
+        if (hasEffort) strengths.push('Recognises the candidate’s time, effort, or contribution.');
+        if (supportiveLabels.length) strengths.push('Supportive or open-door language detected.');
+        if (hasWeekdayDeadline || hasUpdateBy) strengths.push('Uses a specific update window or deadline.');
+        if (signOffOK) strengths.push('Ends with a recognised sign-off (e.g. Best, Thanks, Regards).');
+        if (compoundPair) strengths.push('Combines thanks with recognition of effort — strong empathy signal.');
+        if (strengths.length === 0) strengths.push('Message is clear enough — add explicit thanks and a date if people are waiting.');
 
         const issues = [];
-        if (negH.hits.length) issues.push(`Contains ${negH.hits.length} phrase${negH.hits.length > 1 ? 's' : ''} that often read as cold or corporate-default.`);
-        if (vagueH.hits.length && !PHRASES.timeline.some((t) => lower.includes(t))) issues.push('Uses vague timing language without a clear date or window.');
-        if (gratitudeScore === 0 && wc > 25) issues.push('Little or no explicit gratitude — risky for disappointing news.');
-        if (warmth < 40) issues.push('Tone skews transactional; a human acknowledgement would help.');
-        if (issues.length === 0) issues.push('No major red-flag phrases — focus on tightening timelines and closure.');
+        if (negH.hits.length && msgType === 'rejection') issues.push(`${negH.hits.length} phrase(s) often associated with harsh rejections — balance with warmth.`);
+        if (vagueH.hits.length && !hasTimelineWord && !hasWeekdayDeadline) issues.push('Some vague timing phrases — add a firmer date if you can.');
+        if (!hasGratitude && wc > 30 && msgType === 'rejection') issues.push('Little appreciation for a rejection — consider thanking them for their time.');
+        if (warmth < 44 && roboticHits) issues.push('Stock or process-heavy phrasing — a single human line can help.');
+        if (issues.length === 0) issues.push('No major structural issues flagged.');
+
+        const explainRejectOk = msgType !== 'rejection'
+            || !PHRASES.rejectionSignals.some((r) => lower.includes(r))
+            || lower.length > 200
+            || /(because|since|although|while we|difficult decision)/i.test(lower);
 
         const missing = [
-            { id: 'thanks', label: 'Explicit thank-you or appreciation', pass: gratitudeScore > 5 || /(thank|thanks|appreciate)/.test(lower) },
-            { id: 'time', label: 'Acknowledgement of their time or effort', pass: timeAck > 0 || /(time|effort|invested)/.test(lower) },
-            { id: 'next', label: 'Clear next step or outcome', pass: /\b(will|we'll|please|schedule|calendar|interview|offer|decision)\b/.test(lower) && wc > 15 },
-            { id: 'timeline', label: 'Timeline or date when follow-up is expected', pass: PHRASES.timeline.some((t) => lower.includes(t)) || /\b\d{1,2}\/\d{1,2}\b/.test(text) },
-            { id: 'human', label: 'Human phrasing (not only process jargon)', pass: warmth >= 42 },
-            { id: 'explain', label: 'Explanation when sharing disappointing news', pass: !PHRASES.rejectionSignals.some((r) => lower.includes(r)) || lower.length > 220 || /(because|since|although|while we)/.test(lower) },
+            { id: 'thanks', label: 'Explicit thank-you or appreciation', pass: hasGratitude },
+            { id: 'time', label: 'Acknowledgement of time or effort', pass: hasEffort || /(time|effort|insight)/i.test(lower) },
+            { id: 'next', label: 'Clear next step or status', pass: /\b(will|we'll|expect|interview|update|provide|questions)\b/i.test(lower) && wc > 12 },
+            { id: 'timeline', label: 'Timeline or expected update', pass: hasTimelineWord || hasWeekdayDeadline || hasUpdateBy || /\d{1,2}\/\d{1,2}/.test(text) },
+            { id: 'human', label: 'Human phrasing (not only process jargon)', pass: warmth >= 46 || supportiveLabels.length > 0 },
+            { id: 'explain', label: 'Explanation when sharing disappointing news', pass: explainRejectOk },
         ];
 
         const anxiety = [];
-        if (/\b(soon|shortly)\b/.test(lower) && !PHRASES.timeline.some((t) => lower.includes(t))) {
+        if (msgType === 'progress_update' && /\b(soon|shortly)\b/.test(lower) && !hasWeekdayDeadline) {
+            anxiety.push('“Soon” or “shortly” is softer than a date — consider naming a day if anxiety is high.');
+        } else if (/\b(soon|shortly)\b/.test(lower) && !hasTimelineWord && !hasWeekdayDeadline) {
             anxiety.push('“Soon” or “shortly” without a date keeps people guessing.');
         }
-        if (/we will be in touch|we'll be in touch/.test(lower) && !/\b(monday|tuesday|wednesday|thursday|friday|today|tomorrow|next week|\d)\b/.test(lower)) {
-            anxiety.push('“We’ll be in touch” reads uncertain without a timeframe.');
+        if (touchVague && msgType !== 'progress_update') {
+            anxiety.push('“We’ll be in touch” without a timeframe feels open-ended.');
         }
-        if (PHRASES.rejectionSignals.some((r) => lower.includes(r)) && gratitudeScore < 8) {
-            anxiety.push('Rejection language with little appreciation can feel abrupt.');
+        if (msgType === 'rejection' && PHRASES.rejectionSignals.some((r) => lower.includes(r)) && gratLabels.length < 2) {
+            anxiety.push('Rejection wording with limited appreciation can feel abrupt.');
         }
-        if (trimmed.length < 120 && PHRASES.rejectionSignals.some((r) => lower.includes(r))) {
-            anxiety.push('Very short bad-news notes often feel like a template — even one human line helps.');
-        }
-        if (!/(\bregards\b|sincerely|best wishes|thank you$)/m.test(lower) && wc > 40) {
-            anxiety.push('Ending without a warm sign-off can feel like the message was cut off.');
-        }
-        if (/passive|unable to|not able to proceed/.test(lower) && !/we (wanted|wish)/.test(lower)) {
-            anxiety.push('Passive wording can sound like no one owns the decision — add a clear subject where possible.');
+        if (!signOffOK && wc > 45) {
+            anxiety.push('No clear sign-off line (e.g. Best, Thanks, Regards) — can feel abrupt.');
         }
 
         const suggestions = [];
-        if (!missing[0].pass) suggestions.push('Add a thank-you line near the start, referencing their time or interest.');
-        if (!missing[3].pass) suggestions.push('Include a specific timeline (“by Friday”, “within two business days”).');
-        if (!missing[2].pass) suggestions.push('State what happens next (or confirm there are no further steps) in one sentence.');
-        if (negH.hits.length) suggestions.push('Soften stock rejection lines — pair the outcome with one sincere sentence about their strengths or the competition of the process.');
-        if (vagueH.hits.length && !PHRASES.timeline.some((t) => lower.includes(t))) suggestions.push('Replace vague “touch base soon” with a dated commitment or an honest “we cannot provide individual feedback”.');
-        if (warmth < 50) suggestions.push('Swap a few internal phrases (“our process”) for reader-centred ones (“your application”, “your interview”).');
-        if (suggestions.length === 0) suggestions.push('Polish by reading aloud — if any sentence feels like a form letter, add one specific detail.');
+        if (!hasGratitude && wc > 20) suggestions.push('Add a thank-you near the start, referencing time or interest.');
+        if (!hasTimelineWord && !hasWeekdayDeadline && msgType !== 'general') suggestions.push('Name a day or window for the next update.');
+        if (negH.hits.length && msgType === 'rejection') suggestions.push('Soften template rejection lines with one specific, sincere sentence.');
+        if (!signOffOK && wc > 30) suggestions.push('Close with Best, Thanks, Regards, or Kind regards on their own line.');
+        if (suggestions.length === 0) suggestions.push('Read aloud once — if anything sounds generic, add one concrete detail.');
 
         const original = text;
         const buf = new Uint8Array(original.length);
         const oLower = original.toLowerCase();
         applySeverityBuffer(oLower, original, PHRASES.positive, 1, buf);
+        applyRegexSeverityBuffer(text, PATTERNS.gratitude, 1, buf);
+        applyRegexSeverityBuffer(text, PATTERNS.effort, 1, buf);
+        applyRegexSeverityBuffer(text, PATTERNS.supportive, 1, buf);
         applySeverityBuffer(oLower, original, PHRASES.vague, 2, buf);
         applySeverityBuffer(oLower, original, PHRASES.negative, 3, buf);
 
