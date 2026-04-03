@@ -1,0 +1,37 @@
+{
+    "name": "urlcv/empathy-checker",
+    "description": "Rules-based empathy checker for hiring and workplace messages. Runs entirely in the browser (Alpine.js).",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["empathy", "recruiting", "email", "communication", "hiring", "feedback"],
+    "homepage": "https://urlcv.com/tools/empathy-checker",
+    "authors": [
+        {
+            "name": "URLCV",
+            "homepage": "https://urlcv.com"
+        }
+    ],
+    "require": {
+        "php": "^8.1"
+    },
+    "suggest": {
+        "illuminate/support": "Required for Laravel integration (Blade views)"
+    },
+    "autoload": {
+        "psr-4": {
+            "URLCV\\EmpathyChecker\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "URLCV\\EmpathyChecker\\Laravel\\EmpathyCheckerServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}
